@@ -10,7 +10,7 @@ Add to your app header:
 
 ```roc
 app [main!] {
-    database_url: "https://github.com/niclas-ahden/roc-database-url/releases/download/0.1.0/w6sV-GxFqFo8cGOC8oxam_-TZAQkjjRKFamcqZfftbY.tar.br",
+    database_url: "https://github.com/niclas-ahden/roc-database-url/releases/download/0.2.0/s4GFtAUejxeujRC8kYEszDd-bqHC3eVrCKPVj3nq9Mc.tar.br",
 }
 ```
 
