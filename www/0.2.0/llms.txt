@@ -1,0 +1,70 @@
+# LLM Docs
+
+## Compact Docs
+
+Copy just this section if you want to keep your context small.
+If you want all docs, check the section `Full Docs per Module` below.
+
+DatabaseUrl.parse : Str -> Result DatabaseUrl ParseError
+DatabaseUrl.parse_partial : Str -> Result PartialDatabaseUrl ParseError
+
+## Full Docs per Module
+### DatabaseUrl
+
+Description:
+Represents a parsed database URL with protocol-specific configuration.
+All fields are required (strict parsing).
+
+Description:
+Represents a partially parsed database URL where most fields are optional.
+Useful when you want to parse incomplete URLs without errors.
+
+Description:
+Errors that can occur when parsing a database URL
+
+parse : Str -> Result DatabaseUrl ParseError
+
+Description:
+Parse a database URL string into a DatabaseUrl
+
+Supports PostgreSQL, MySQL, SQLite, and other database URL formats:
+- PostgreSQL: `postgresql://user:pass@host:port/database?options`
+- MySQL: `mysql://user:pass@host:port/database?options`
+- SQLite: `sqlite:///path/to/db.sqlite?options`
+- Other: `protocol://user:pass@host:port/database?options` (e.g., mongodb, redis)
+
+Example:
+```
+url = DatabaseUrl.parse("postgresql://user:pass@localhost:5432/mydb?sslmode=require")
+when url is
+    Ok(PostgreSQL(config)) -> # Use config with e.g. roc-pg
+    Err(InvalidUri) -> # Handle error
+```
+
+parse_partial : Str -> Result PartialDatabaseUrl ParseError
+
+Description:
+Parse a database URL string into a PartialDatabaseUrl
+
+Unlike `parse`, this function accepts incomplete URLs and returns `Maybe` for optional fields.
+Useful when you want to parse URLs that may be missing host, port, user, or database.
+No default values are assumed - missing fields are returned as `Nothing`.
+
+Supports PostgreSQL, MySQL, SQLite, and other database URL formats:
+- PostgreSQL: `postgresql://[user[:pass]@][host][:port][/database][?options]`
+- MySQL: `mysql://[user[:pass]@][host][:port][/database][?options]`
+- SQLite: `sqlite:///path/to/db.sqlite?options`
+- Other: `protocol://[user[:pass]@][host][:port][/database][?options]` (e.g., mongodb, redis)
+
+Example:
+```
+url = DatabaseUrl.parse_partial("postgresql://localhost")
+when url is
+    Ok(PostgreSQL(config)) ->
+        # config.host is Just "localhost"
+        # config.user is Nothing
+        # config.port is Nothing
+        port = Maybe.with_default(config.port, 5432)
+    Err(InvalidUri) -> # Handle error
+```
+

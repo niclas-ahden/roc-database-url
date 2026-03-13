@@ -23,8 +23,6 @@
             buildInputs = with pkgs;
               [
                 rocFull
-                inotify-tools
-                watchexec
               ];
 
             # For vscode plugin https://github.com/ivan-demchenko/roc-vscode-unofficial
