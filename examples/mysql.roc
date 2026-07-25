@@ -1,98 +1,55 @@
 app [main!] {
-    cli: platform "https://github.com/roc-lang/basic-cli/releases/download/0.20.0/X73hGh05nNTkDHU06FHC0YfFaQB1pimX7gncRcao5mU.tar.br",
-    dburl: "../package/main.roc",
+	pf: platform "https://github.com/niclas-ahden/basic-cli/releases/download/0.22.1/DobkAk7zNyqAgqh2Riaj5c5DtWtKhd5iVYE5RFa6izcd.tar.zst",
+	db: "../package/main.roc",
 }
 
-import cli.Stdout
-import dburl.DatabaseUrl
+import pf.Stdout
+import db.DatabaseUrl
 
-main! = |_|
-    examples = [
-        # Basic MySQL URL (missing user and port - will fail strict parsing)
-        "mysql://localhost",
-        # With port
-        "mysql://localhost:3306",
-        # With database but no port (will fail strict parsing)
-        "mysql://user@localhost/mydb",
-        # With user and password but no port (will fail strict parsing)
-        "mysql://user:pass@localhost/mydb",
-        # Full URL with all components
-        "mysql://user:pass@db.example.com:3306/production",
-        # With query parameters (common MySQL options)
-        "mysql://user:pass@localhost:3306/mydb?charset=utf8mb4&parseTime=true",
-        # With connection pool options
-        "mysql://user:pass@localhost:3306/mydb?maxOpenConns=10&maxIdleConns=5",
-        # With percent-encoded password containing @ symbol
-        "mysql://user:p%40ss%21@localhost:3306/mydb",
-    ]
+# Strict parsing of MySQL URLs. Run it with: roc examples/mysql.roc
 
-    List.walk!(examples, {}, \{}, url ->
-        _ = Stdout.line! "\n=== Parsing: $(url) ==="
+main! = |_| {
+	urls = [
+		# Missing user and port, so strict parsing fails
+		"mysql://localhost",
+		# Missing user
+		"mysql://localhost:3306",
+		# Missing port
+		"mysql://user:pass@localhost/mydb",
+		# Full URL with all components
+		"mysql://user:pass@db.example.com:3306/production",
+		# With common MySQL options
+		"mysql://user:pass@localhost:3306/mydb?charset=utf8mb4&parseTime=true",
+		# With a percent-encoded password containing an @
+		"mysql://user:p%40ss%21@localhost:3306/mydb",
+	]
 
-        when DatabaseUrl.parse(url) is
-            Ok(MySQL(config)) ->
-                _ = Stdout.line! "  Protocol: MySQL"
-                _ = Stdout.line! "  Host: $(config.host)"
-                _ = Stdout.line! "  Port: $(Num.to_str(config.port))"
-                _ = Stdout.line! "  User: $(config.user)"
-                auth_str =
-                    when config.auth is
-                        None -> "None"
-                        Password(pass) -> "Password: $(pass)"
-                _ = Stdout.line! "  Auth: $(auth_str)"
-                _ = Stdout.line! "  Database: $(config.database)"
-                if Dict.is_empty(config.options) then
-                    _ = Stdout.line! "  Options: (none)"
-                    {}
-                else
-                    options_list = config.options |> Dict.to_list
-                    _ = List.walk!(options_list, {}, \{}, (key, value) ->
-                        _ = Stdout.line! "  Option: $(key) = $(value)"
-                        {})
-                    {}
+	for url in urls {
+		Stdout.line!("=== Parsing: ${url} ===")?
 
-            Ok(_) ->
-                _ = Stdout.line! "  Error: Expected MySQL URL"
-                {}
+		match DatabaseUrl.parse(url) {
+			Ok(MySQL(config)) => {
+				Stdout.line!("  Host: ${config.host}")?
+				Stdout.line!("  Port: ${config.port.to_str()}")?
+				Stdout.line!("  User: ${config.user}")?
+				Stdout.line!("  Auth: ${Str.inspect(config.auth)}")?
+				Stdout.line!("  Database: ${config.database}")?
+				print_options!(config.options)?
+			}
 
-            Err(InvalidUri) ->
-                _ = Stdout.line! "  Error: Invalid URI"
-                {}
+			Ok(_) => Stdout.line!("  Expected a MySQL URL")?
+			Err(err) => Stdout.line!("  Error: ${Str.inspect(err)}")?
+		}
+	}
 
-            Err(InvalidPort(port)) ->
-                _ = Stdout.line! "  Error: Invalid port: $(port)"
-                {}
+	Ok({})
+}
 
-            Err(InvalidHost(host)) ->
-                _ = Stdout.line! "  Error: Invalid host: $(host)"
-                {}
+print_options! = |options| {
+	for pair in Dict.to_list(options) {
+		(key, value) = pair
+		Stdout.line!("  Option: ${key} = ${value}")?
+	}
 
-            Err(MissingDatabase) ->
-                _ = Stdout.line! "  Error: Missing database"
-                {}
-
-            Err(MissingUser) ->
-                _ = Stdout.line! "  Error: Missing user"
-                {}
-
-            Err(MissingPort) ->
-                _ = Stdout.line! "  Error: Missing port"
-                {}
-
-            Err(RelativeUrl) ->
-                _ = Stdout.line! "  Error: Relative URL not supported"
-                {}
-
-            Err(MissingProtocol) ->
-                _ = Stdout.line! "  Error: Missing protocol"
-                {})
-
-    _ = Stdout.line! "\n=== MySQL Specific Connection Options ==="
-    _ = Stdout.line! "Common MySQL URL query parameters:"
-    _ = Stdout.line! "  - charset: Character set (e.g., utf8mb4)"
-    _ = Stdout.line! "  - parseTime: Parse DATE/DATETIME to time.Time"
-    _ = Stdout.line! "  - timeout: Connection timeout"
-    _ = Stdout.line! "  - readTimeout: I/O read timeout"
-    _ = Stdout.line! "  - writeTimeout: I/O write timeout"
-    _ = Stdout.line! "  - maxOpenConns: Maximum open connections"
-    Stdout.line! "  - maxIdleConns: Maximum idle connections"
+	Ok({})
+}

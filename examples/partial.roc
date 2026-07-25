@@ -1,154 +1,56 @@
 app [main!] {
-    cli: platform "https://github.com/roc-lang/basic-cli/releases/download/0.20.0/X73hGh05nNTkDHU06FHC0YfFaQB1pimX7gncRcao5mU.tar.br",
-    dburl: "../package/main.roc",
+	pf: platform "https://github.com/niclas-ahden/basic-cli/releases/download/0.22.1/DobkAk7zNyqAgqh2Riaj5c5DtWtKhd5iVYE5RFa6izcd.tar.zst",
+	db: "../package/main.roc",
 }
 
-import cli.Stdout
-import dburl.DatabaseUrl
+import pf.Stdout
+import db.DatabaseUrl
 
-main! = |_|
-    _ = Stdout.line! "=== Demonstrating parse_partial (lenient parsing) ==="
-    _ = Stdout.line! ""
+# Lenient parsing with DatabaseUrl.parse_partial. Run it with: roc examples/partial.roc
+#
+# Unlike DatabaseUrl.parse, a missing host, port, user, or database is not an
+# error. Each field comes back labelled, such as Host("localhost") or NoHost,
+# and no defaults are assumed.
 
-    examples = [
-        # Minimal URLs (would fail with strict parse)
-        "postgresql://localhost",
-        "postgresql://localhost:5432",
-        "mysql://localhost",
-        # With just user
-        "postgresql://user@localhost",
-        # With user and database
-        "postgresql://user@localhost/mydb",
-        # Complete URL (works with both parse and parse_partial)
-        "postgresql://user:pass@localhost:5432/mydb",
-        # MySQL examples
-        "mysql://localhost/testdb",
-        "mysql://user@db.example.com",
-    ]
+main! = |_| {
+	urls = [
+		# These would all fail strict parsing
+		"postgresql://localhost",
+		"postgresql://localhost:5432",
+		"postgresql://user@localhost",
+		"postgresql://user@localhost/mydb",
+		# A complete URL works with both parse and parse_partial
+		"postgresql://user:pass@localhost:5432/mydb",
+		# Other protocols work too
+		"mysql://localhost/testdb",
+		"mongodb://user@db.example.com",
+		# Nonsense is still an error, even leniently
+		"postgresql://localhost:banana",
+	]
 
-    List.walk!(examples, {}, \{}, url ->
-        _ = Stdout.line! "\n=== Parsing: $(url) ==="
+	for url in urls {
+		Stdout.line!("=== Parsing: ${url} ===")?
 
-        when DatabaseUrl.parse_partial(url) is
-            Ok(PostgreSQL(config)) ->
-                _ = Stdout.line! "  Protocol: PostgreSQL"
-                host_str =
-                    when config.host is
-                        Just(h) -> "Just $(h)"
-                        Nothing -> "Nothing"
-                _ = Stdout.line! "  Host: $(host_str)"
-                port_str =
-                    when config.port is
-                        Just(p) -> "Just $(Num.to_str(p))"
-                        Nothing -> "Nothing"
-                _ = Stdout.line! "  Port: $(port_str)"
-                user_str =
-                    when config.user is
-                        Just(u) -> "Just $(u)"
-                        Nothing -> "Nothing"
-                _ = Stdout.line! "  User: $(user_str)"
-                auth_str =
-                    when config.auth is
-                        None -> "None"
-                        Password(pass) -> "Password: $(pass)"
-                _ = Stdout.line! "  Auth: $(auth_str)"
-                db_str =
-                    when config.database is
-                        Just(db) -> "Just $(db)"
-                        Nothing -> "Nothing"
-                _ = Stdout.line! "  Database: $(db_str)"
-                {}
+		match DatabaseUrl.parse_partial(url) {
+			Ok(PostgreSQL(config)) | Ok(MySQL(config)) => {
+				Stdout.line!("  Host: ${Str.inspect(config.host)}")?
+				Stdout.line!("  Port: ${Str.inspect(config.port)}")?
+				Stdout.line!("  User: ${Str.inspect(config.user)}")?
+				Stdout.line!("  Auth: ${Str.inspect(config.auth)}")?
+				Stdout.line!("  Database: ${Str.inspect(config.database)}")?
+			}
 
-            Ok(MySQL(config)) ->
-                _ = Stdout.line! "  Protocol: MySQL"
-                host_str =
-                    when config.host is
-                        Just(h) -> "Just $(h)"
-                        Nothing -> "Nothing"
-                _ = Stdout.line! "  Host: $(host_str)"
-                port_str =
-                    when config.port is
-                        Just(p) -> "Just $(Num.to_str(p))"
-                        Nothing -> "Nothing"
-                _ = Stdout.line! "  Port: $(port_str)"
-                user_str =
-                    when config.user is
-                        Just(u) -> "Just $(u)"
-                        Nothing -> "Nothing"
-                _ = Stdout.line! "  User: $(user_str)"
-                auth_str =
-                    when config.auth is
-                        None -> "None"
-                        Password(pass) -> "Password: $(pass)"
-                _ = Stdout.line! "  Auth: $(auth_str)"
-                db_str =
-                    when config.database is
-                        Just(db) -> "Just $(db)"
-                        Nothing -> "Nothing"
-                _ = Stdout.line! "  Database: $(db_str)"
-                {}
+			Ok(Other(config)) => {
+				Stdout.line!("  Protocol: ${config.protocol}")?
+				Stdout.line!("  Host: ${Str.inspect(config.host)}")?
+				Stdout.line!("  User: ${Str.inspect(config.user)}")?
+				Stdout.line!("  Database: ${Str.inspect(config.database)}")?
+			}
 
-            Ok(_) ->
-                _ = Stdout.line! "  Error: Unexpected database type"
-                {}
+			Ok(SQLite(config)) => Stdout.line!("  Path: ${config.path}")?
+			Err(err) => Stdout.line!("  Error: ${Str.inspect(err)}")?
+		}
+	}
 
-            Err(InvalidUri) ->
-                _ = Stdout.line! "  Error: Invalid URI"
-                {}
-
-            Err(InvalidPort(port)) ->
-                _ = Stdout.line! "  Error: Invalid port: $(port)"
-                {}
-
-            Err(InvalidHost(host)) ->
-                _ = Stdout.line! "  Error: Invalid host: $(host)"
-                {}
-
-            Err(MissingDatabase) ->
-                _ = Stdout.line! "  Error: Missing database"
-                {}
-
-            Err(MissingUser) ->
-                _ = Stdout.line! "  Error: Missing user"
-                {}
-
-            Err(MissingPort) ->
-                _ = Stdout.line! "  Error: Missing port"
-                {}
-
-            Err(RelativeUrl) ->
-                _ = Stdout.line! "  Error: Relative URL not supported"
-                {}
-
-            Err(MissingProtocol) ->
-                _ = Stdout.line! "  Error: Missing protocol"
-                {})
-
-    _ = Stdout.line! ""
-    _ = Stdout.line! "=== Comparing parse vs parse_partial ==="
-    _ = Stdout.line! ""
-
-    test_url = "postgresql://localhost"
-    _ = Stdout.line! "URL: $(test_url)"
-    _ = Stdout.line! ""
-
-    _ = Stdout.line! "Using parse (strict):"
-    _ =
-        when DatabaseUrl.parse(test_url) is
-            Ok(_) -> Stdout.line! "  Success"
-            Err(MissingUser) -> Stdout.line! "  Error: MissingUser"
-            Err(MissingPort) -> Stdout.line! "  Error: MissingPort (expected)"
-            Err(_) -> Stdout.line! "  Error: Other error"
-
-    _ = Stdout.line! ""
-    _ = Stdout.line! "Using parse_partial (lenient):"
-    when DatabaseUrl.parse_partial(test_url) is
-        Ok(PostgreSQL(config)) ->
-            user_str =
-                when config.user is
-                    Just(u) -> "Just $(u)"
-                    Nothing -> "Nothing"
-            Stdout.line! "  Success - user is $(user_str)"
-
-        Ok(_) -> Stdout.line! "  Success - other type"
-        Err(_) -> Stdout.line! "  Error"
+	Ok({})
+}

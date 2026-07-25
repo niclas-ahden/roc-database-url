@@ -1,13 +1,8 @@
-## Built binaries with no extension
-# Ignore all
+# Ignore generated binaries (with no extension) by default
 *
-# Un-ignore files with extensions
 !*.*
-# Un-ignore directories
 !*/
-## End of Built binaries with no extensions
 
-*.roc-format-failed
-report.xml
+.direnv/
 .envrc
-.direnv
+generated-docs/

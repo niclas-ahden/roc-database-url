@@ -1,678 +1,492 @@
-module [
-    DatabaseUrl,
-    PartialDatabaseUrl,
-    ParseError,
-    parse,
-    parse_partial,
-]
-
 import url.Uri
-import url.Url
-import maybe.Maybe exposing [Maybe]
 
-## Convert a string to Maybe, returning Nothing if empty
-from_non_empty_str : Str -> Maybe Str
-from_non_empty_str = |str|
-    if Str.is_empty(str) then
-        Nothing
-    else
-        Just(str)
-
-## Check if string starts with prefix (case-insensitive ASCII)
-starts_with_caseless : Str, Str -> Bool
-starts_with_caseless = |str, prefix|
-    prefix_len = Str.count_utf8_bytes(prefix)
-    str_bytes = Str.to_utf8(str)
-    str_prefix_bytes = List.take_first(str_bytes, prefix_len)
-    when Str.from_utf8(str_prefix_bytes) is
-        Ok(str_prefix) -> Str.caseless_ascii_equals(str_prefix, prefix)
-        Err(_) -> Bool.false
-
-## Drop first n bytes from a string
-drop_first_bytes : Str, U64 -> Str
-drop_first_bytes = |str, n|
-    str
-    |> Str.to_utf8
-    |> List.drop_first(n)
-    |> Str.from_utf8
-    |> Result.with_default("")
-
-## Represents a parsed database URL with protocol-specific configuration.
-## All fields are required (strict parsing).
-DatabaseUrl : [
-    PostgreSQL {
-            host : Str,
-            port : U16,
-            user : Str,
-            auth : [None, Password Str],
-            database : Str,
-            options : Dict Str Str,
-        },
-    MySQL {
-            host : Str,
-            port : U16,
-            user : Str,
-            auth : [None, Password Str],
-            database : Str,
-            options : Dict Str Str,
-        },
-    SQLite {
-            path : Str,
-            options : Dict Str Str,
-        },
-    Other {
-            protocol : Str,
-            host : Str,
-            port : U16,
-            user : Str,
-            auth : [None, Password Str],
-            database : Str,
-            options : Dict Str Str,
-        },
-]
-
-## Represents a partially parsed database URL where most fields are optional.
-## Useful when you want to parse incomplete URLs without errors.
-PartialDatabaseUrl : [
-    PostgreSQL {
-            host : Maybe Str,
-            port : Maybe U16,
-            user : Maybe Str,
-            auth : [None, Password Str],
-            database : Maybe Str,
-            options : Dict Str Str,
-        },
-    MySQL {
-            host : Maybe Str,
-            port : Maybe U16,
-            user : Maybe Str,
-            auth : [None, Password Str],
-            database : Maybe Str,
-            options : Dict Str Str,
-        },
-    SQLite {
-            path : Str,
-            options : Dict Str Str,
-        },
-    Other {
-            protocol : Str,
-            host : Maybe Str,
-            port : Maybe U16,
-            user : Maybe Str,
-            auth : [None, Password Str],
-            database : Maybe Str,
-            options : Dict Str Str,
-        },
-]
-
-## Errors that can occur when parsing a database URL
-ParseError : [
-    InvalidHost Str,
-    InvalidPort Str,
-    InvalidUri,
-    MissingDatabase,
-    MissingPort,
-    MissingProtocol,
-    MissingUser,
-    RelativeUrl,
-]
-
-## Parse a database URL string into a DatabaseUrl
+## A parsed database URL, produced by strict parsing with [DatabaseUrl.parse].
+## Lenient parsing with [DatabaseUrl.parse_partial] produces a
+## [PartialDatabaseUrl] instead, where missing fields are labelled rather than
+## errors.
 ##
-## Supports PostgreSQL, MySQL, SQLite, and other database URL formats:
-## - PostgreSQL: `postgresql://user:pass@host:port/database?options`
-## - MySQL: `mysql://user:pass@host:port/database?options`
-## - SQLite: `sqlite:///path/to/db.sqlite?options`
-## - Other: `protocol://user:pass@host:port/database?options` (e.g., mongodb, redis)
-##
-## Example:
-## ```
-## url = DatabaseUrl.parse("postgresql://user:pass@localhost:5432/mydb?sslmode=require")
-## when url is
-##     Ok(PostgreSQL(config)) -> # Use config with e.g. roc-pg
-##     Err(InvalidUri) -> # Handle error
-## ```
-parse : Str -> Result DatabaseUrl ParseError
-parse = |url_str|
-    # Handle SQLite URLs specially since they don't follow standard URL format
-    if starts_with_caseless(url_str, "sqlite:") then
-        parse_sqlite_database(url_str)
-        |> Result.map_ok(SQLite)
-    else
-        parsed_uri =
-            Uri.parse_uri(url_str)
-            |> Result.map_err(
-                |err|
-                    when err is
-                        InvalidUri -> InvalidUri
-                        InvalidPort(str) -> InvalidPort(str)
-                        InvalidHost(str) -> InvalidHost(str),
-            )
+## PostgreSQL and MySQL get their own tags and SQLite is a file path rather
+## than a server. Every other protocol (mongodb, redis, and so on) is parsed as
+## `Other` and carries the same labelled fields lenient parsing produces, since
+## we know what PostgreSQL and MySQL need in order to connect but not what an
+## arbitrary protocol needs.
+DatabaseUrl := [
+	PostgreSQL(Config),
+	MySQL(Config),
+	SQLite(SQLiteConfig),
+	Other(PartialConfig),
+].{
 
-        parsed_uri
-        |> Result.try(
-            |uri|
-                when uri is
-                    Relative(_) -> Err(RelativeUrl)
-                    Absolute(parts) ->
-                        when parts.protocol is
-                            Just(protocol) ->
-                                if Str.caseless_ascii_equals(protocol, "postgresql") or Str.caseless_ascii_equals(protocol, "postgres") then
-                                    parse_server_database(parts)
-                                    |> Result.map_ok(PostgreSQL)
-                                else if Str.caseless_ascii_equals(protocol, "mysql") then
-                                    parse_server_database(parts)
-                                    |> Result.map_ok(MySQL)
-                                else
-                                    parse_other(protocol, parts)
+	## Structural equality, derived: two [DatabaseUrl]s are equal when every
+	## component is.
+	is_eq : _
 
-                            Nothing -> Err(MissingProtocol),
-        )
+	## The server config produced by strict parsing, with every field present.
+	##
+	## `protocol` is the protocol exactly as it was written, so `postgres://`
+	## and `postgresql://` stay apart after parsing. An IPv6 `host` has had its
+	## brackets removed (`[::1]` becomes `::1`), since the brackets are URL
+	## syntax rather than part of the address.
+	Config : {
+		protocol : Str,
+		host : Str,
+		port : U16,
+		user : Str,
+		auth : [Password(Str), NoPassword],
+		database : Str,
+		options : Dict(Str, Str),
+	}
 
-## Parse a database URL string into a PartialDatabaseUrl
-##
-## Unlike `parse`, this function accepts incomplete URLs and returns `Maybe` for optional fields.
-## Useful when you want to parse URLs that may be missing host, port, user, or database.
-## No default values are assumed - missing fields are returned as `Nothing`.
-##
-## Supports PostgreSQL, MySQL, SQLite, and other database URL formats:
-## - PostgreSQL: `postgresql://[user[:pass]@][host][:port][/database][?options]`
-## - MySQL: `mysql://[user[:pass]@][host][:port][/database][?options]`
-## - SQLite: `sqlite:///path/to/db.sqlite?options`
-## - Other: `protocol://[user[:pass]@][host][:port][/database][?options]` (e.g., mongodb, redis)
-##
-## Example:
-## ```
-## url = DatabaseUrl.parse_partial("postgresql://localhost")
-## when url is
-##     Ok(PostgreSQL(config)) ->
-##         # config.host is Just "localhost"
-##         # config.user is Nothing
-##         # config.port is Nothing
-##         port = Maybe.with_default(config.port, 5432)
-##     Err(InvalidUri) -> # Handle error
-## ```
-parse_partial : Str -> Result PartialDatabaseUrl ParseError
-parse_partial = |url_str|
-    # Handle SQLite URLs specially since they don't follow standard URL format
-    if starts_with_caseless(url_str, "sqlite:") then
-        parse_sqlite_database(url_str)
-        |> Result.map_ok(SQLite)
-    else
-        parsed_uri =
-            Uri.parse_uri(url_str)
-            |> Result.map_err(
-                |err|
-                    when err is
-                        InvalidUri -> InvalidUri
-                        InvalidPort(str) -> InvalidPort(str)
-                        InvalidHost(str) -> InvalidHost(str),
-            )
+	## The config produced by parsing a SQLite URL, strictly or leniently.
+	SQLiteConfig : {
+		path : Str,
+		options : Dict(Str, Str),
+	}
 
-        parsed_uri
-        |> Result.try(
-            |uri|
-                when uri is
-                    Relative(_) -> Err(RelativeUrl)
-                    Absolute(parts) ->
-                        when parts.protocol is
-                            Just(protocol) ->
-                                if Str.caseless_ascii_equals(protocol, "postgresql") or Str.caseless_ascii_equals(protocol, "postgres") then
-                                    parse_server_database_partial(parts)
-                                    |> Result.map_ok(PostgreSQL)
-                                else if Str.caseless_ascii_equals(protocol, "mysql") then
-                                    parse_server_database_partial(parts)
-                                    |> Result.map_ok(MySQL)
-                                else
-                                    parse_other_partial(protocol, parts)
+	## The result of lenient parsing with [DatabaseUrl.parse_partial]. Unlike
+	## [DatabaseUrl], the protocols we know are not held to any requirements
+	## either.
+	PartialDatabaseUrl : [
+		PostgreSQL(PartialConfig),
+		MySQL(PartialConfig),
+		SQLite(SQLiteConfig),
+		Other(PartialConfig),
+	]
 
-                            Nothing -> Err(MissingProtocol),
-        )
+	## [Config] with each optional field labelled as present or absent.
+	PartialConfig : {
+		protocol : Str,
+		host : [Host(Str), NoHost],
+		port : [Port(U16), NoPort],
+		user : [User(Str), NoUser],
+		auth : [Password(Str), NoPassword],
+		database : [Database(Str), NoDatabase],
+		options : Dict(Str, Str),
+	}
 
-## Generic parser for server-based databases (PostgreSQL, MySQL, Other)
-## Extracts and validates common fields, returning a config record
-parse_server_database : { protocol : Maybe Str, userinfo : Maybe Str, host : Str, port : Maybe U16, path : Str, query : Maybe Str, fragment : Maybe Str } -> Result { host : Str, port : U16, user : Str, auth : [None, Password Str], database : Str, options : Dict Str Str } ParseError
-parse_server_database = |parts|
-    # Extract port (required for strict parsing)
-    port =
-        when parts.port is
-            Just(p) -> Ok(p)
-            Nothing -> Err(MissingPort)
+	## Parses a database URL strictly. For PostgreSQL and MySQL the host, port,
+	## user, and database are all required, and a missing one is an error
+	## naming exactly what was missing.
+	##
+	## Supported formats:
+	## - PostgreSQL: `postgresql://user:pass@host:port/database?options`
+	##   (`postgres://` works too)
+	## - MySQL: `mysql://user:pass@host:port/database?options`
+	## - SQLite: `sqlite:///path/to/db.sqlite?options`
+	## - Other: `protocol://user:pass@host:port/database?options`
+	##
+	## SQLite URLs are file paths, so none of the server fields apply and only
+	## the path is extracted. Any other protocol is parsed as `Other` with the
+	## fields labelled, because `redis://localhost:6379` is a perfectly good
+	## redis URL and demanding a user or a database of it would be inventing a
+	## requirement.
+	##
+	## Host, user, password, database, and option keys and values are
+	## percent-decoded. The password may be empty (`user:@host`), which is
+	## distinct from no password at all (`user@host`).
+	##
+	## ```
+	## DatabaseUrl.parse("postgresql://user:pass@localhost:5432/mydb?sslmode=require")
+	## # Ok(PostgreSQL({
+	## #     protocol: "postgresql",
+	## #     host: "localhost",
+	## #     port: 5432,
+	## #     user: "user",
+	## #     auth: Password("pass"),
+	## #     database: "mydb",
+	## #     options: Dict.from_list([("sslmode", "require")]),
+	## # }))
+	## ```
+	parse : Str -> Try(DatabaseUrl, [InvalidPort(Str), MissingDatabase, MissingHost, MissingPort, MissingProtocol, MissingUser, RelativeUrl])
+	parse = |url_str|
+		match sqlite_remainder(url_str) {
+			Ok(rest) => Ok(SQLite(parse_sqlite(rest)))
+			Err(NotFound) => {
+				uri = Uri.parse(url_str)
+				protocol = protocol_of(uri)?
 
-    # Parse userinfo into user and password (required for strict parsing)
-    user_auth_result =
-        when parts.userinfo is
-            Nothing -> Err(MissingUser)
-            Just(userinfo) ->
-                when Str.split_first(userinfo, ":") is
-                    Ok({ before, after }) ->
-                        decoded_user = percent_decode(before)
-                        decoded_pass = percent_decode(after)
-                        Ok((decoded_user, Password(decoded_pass)))
+				match classify(protocol) {
+					PostgreSQL => Ok(PostgreSQL(parse_server(uri, protocol)?))
+					MySQL => Ok(MySQL(parse_server(uri, protocol)?))
+					Other => Ok(Other(parse_server_partial(uri, protocol)?))
+				}
+			}
+		}
 
-                    Err(NotFound) ->
-                        Ok((percent_decode(userinfo), None))
+	## Parses a database URL leniently. Unlike [DatabaseUrl.parse], a missing
+	## host, port, user, or database is not an error for any protocol. Each of
+	## those fields comes back labelled, `Host("localhost")` or `NoHost` and so
+	## on, and no defaults are assumed. A port that was written but is not a
+	## `U16` is still an error, since that is nonsense rather than absence.
+	##
+	## ```
+	## # Gives Ok(PostgreSQL({ protocol: "postgresql", host: Host("localhost"), port: NoPort, user: NoUser, auth: NoPassword, database: NoDatabase, options: Dict.empty() }))
+	## DatabaseUrl.parse_partial("postgresql://localhost")
+	## ```
+	parse_partial : Str -> Try(PartialDatabaseUrl, [InvalidPort(Str), MissingProtocol, RelativeUrl])
+	parse_partial = |url_str|
+		match sqlite_remainder(url_str) {
+			Ok(rest) => Ok(SQLite(parse_sqlite(rest)))
+			Err(NotFound) => {
+				uri = Uri.parse(url_str)
+				protocol = protocol_of(uri)?
+				config = parse_server_partial(uri, protocol)?
 
-    # Extract database from path (required for strict parsing)
-    database =
-        raw_db =
-            if Str.starts_with(parts.path, "/") then
-                parts.path
-                |> Str.replace_first("/", "")
-                |> percent_decode
-            else
-                percent_decode(parts.path)
-        if Str.is_empty(raw_db) then
-            Err(MissingDatabase)
-        else
-            Ok(raw_db)
+				match classify(protocol) {
+					PostgreSQL => Ok(PostgreSQL(config))
+					MySQL => Ok(MySQL(config))
+					Other => Ok(Other(config))
+				}
+			}
+		}
+}
 
-    # Parse query parameters into options
-    options =
-        parts.query
-        |> Maybe.map(parse_query_params)
-        |> Maybe.with_default(Dict.empty({}))
+protocol_of : Uri -> Try(Str, [MissingProtocol, RelativeUrl, ..])
+protocol_of = |uri|
+	match Uri.scheme(uri) {
+		Scheme(s) => Ok(s)
+		SchemeRelative => Err(RelativeUrl)
+		NoScheme => Err(MissingProtocol)
+	}
 
-    # Validate required fields
-    port
-    |> Result.try(
-        |valid_port|
-            user_auth_result
-            |> Result.try(
-                |(user, auth)|
-                    database
-                    |> Result.map_ok(
-                        |valid_database| {
-                            host: parts.host,
-                            port: valid_port,
-                            user,
-                            auth,
-                            database: valid_database,
-                            options,
-                        },
-                    ),
-            ),
-    )
+## PostgreSQL and MySQL get their own tags, every other protocol is Other.
+classify : Str -> [PostgreSQL, MySQL, Other]
+classify = |protocol|
+	if Str.caseless_ascii_equals(protocol, "postgresql") or Str.caseless_ascii_equals(protocol, "postgres") {
+		PostgreSQL
+	} else if Str.caseless_ascii_equals(protocol, "mysql") {
+		MySQL
+	} else {
+		Other
+	}
 
-## Parse URL with other protocol (e.g., mongodb, redis, etc.)
-parse_other : Str, { protocol : Maybe Str, userinfo : Maybe Str, host : Str, port : Maybe U16, path : Str, query : Maybe Str, fragment : Maybe Str } -> Result DatabaseUrl ParseError
-parse_other = |protocol, parts|
-    parse_server_database(parts)
-    |> Result.map_ok(|config| Other({ protocol, host: config.host, port: config.port, user: config.user, auth: config.auth, database: config.database, options: config.options }))
+parse_server : Uri, Str -> Try(DatabaseUrl.Config, [InvalidPort(Str), MissingDatabase, MissingHost, MissingPort, MissingUser, ..])
+parse_server = |uri, protocol| {
+	host = 
+		match Uri.host(uri) {
+			Host(h) => host_str(h)
+			EmptyHost | NoHost => return Err(MissingHost)
+		}
 
-## Parse SQLite URL into config record
-## SQLite uses file paths, not host/port/user
-parse_sqlite_database : Str -> Result { path : Str, options : Dict Str Str } ParseError
-parse_sqlite_database = |url_str|
-    # For SQLite, extract the file path from the original URL
-    # sqlite:///absolute/path or sqlite://./relative/path or sqlite::memory:
+	port = 
+		match Uri.port(uri) {
+			Ok(Port(p)) => p
+			Ok(NoPort) => return Err(MissingPort)
+			Err(PortParseErr(raw)) => return Err(InvalidPort(raw))
+		}
 
-    # Remove "sqlite://" or "sqlite:" prefix (case-insensitive)
-    url_without_protocol =
-        if starts_with_caseless(url_str, "sqlite://") then
-            drop_first_bytes(url_str, 9)
-        else if starts_with_caseless(url_str, "sqlite:") then
-            drop_first_bytes(url_str, 7)
-        else
-            url_str
+	(user, auth) = 
+		match Uri.userinfo(uri) {
+			NoUserinfo => return Err(MissingUser)
+			Userinfo(ui) => split_userinfo(ui)
+		}
 
-    # Split path and query string
-    (path_part, query_part) =
-        when Str.split_first(url_without_protocol, "?") is
-            Ok({ before, after }) -> (before, Just(after))
-            Err(NotFound) -> (url_without_protocol, Nothing)
+	database = 
+		match database_from_path(Uri.path(uri)) {
+			Database(db) => db
+			NoDatabase => return Err(MissingDatabase)
+		}
 
-    path = percent_decode(path_part)
+	Ok({ protocol, host, port, user, auth, database, options: Dict.from_list(Uri.query_params(uri)) })
+}
 
-    # Parse query parameters into options
-    options =
-        when query_part is
-            Nothing -> Dict.empty({})
-            Just(query_str) -> parse_query_params(query_str)
+parse_server_partial : Uri, Str -> Try(DatabaseUrl.PartialConfig, [InvalidPort(Str), ..])
+parse_server_partial = |uri, protocol| {
+	host = 
+		match Uri.host(uri) {
+			Host(h) => Host(host_str(h))
+			EmptyHost | NoHost => NoHost
+		}
 
-    Ok({ path, options })
+	port = 
+		match Uri.port(uri) {
+			Ok(Port(p)) => Port(p)
+			Ok(NoPort) => NoPort
+			Err(PortParseErr(raw)) => return Err(InvalidPort(raw))
+		}
 
-## Generic partial parser for server-based databases
-## Extracts common fields with optional values, returns a config record
-parse_server_database_partial : { protocol : Maybe Str, userinfo : Maybe Str, host : Str, port : Maybe U16, path : Str, query : Maybe Str, fragment : Maybe Str } -> Result { host : Maybe Str, port : Maybe U16, user : Maybe Str, auth : [None, Password Str], database : Maybe Str, options : Dict Str Str } ParseError
-parse_server_database_partial = |parts|
-    # Extract host (optional for partial parsing)
-    host = from_non_empty_str(parts.host)
+	(user, auth) = 
+		match Uri.userinfo(uri) {
+			NoUserinfo => (NoUser, NoPassword)
+			Userinfo(ui) => {
+				(u, a) = split_userinfo(ui)
+				(User(u), a)
+			}
+		}
 
-    # Parse userinfo into user and password
-    (user, auth) =
-        parts.userinfo
-        |> Maybe.map(
-            |userinfo|
-                when Str.split_first(userinfo, ":") is
-                    Ok({ before, after }) ->
-                        decoded_user = percent_decode(before)
-                        decoded_pass = percent_decode(after)
-                        (Just(decoded_user), Password(decoded_pass))
+	Ok({
+		protocol,
+		host,
+		port,
+		user,
+		auth,
+		database: database_from_path(Uri.path(uri)),
+		options: Dict.from_list(Uri.query_params(uri)),
+	})
+}
 
-                    Err(NotFound) ->
-                        (Just(percent_decode(userinfo)), None),
-        )
-        |> Maybe.with_default((Nothing, None))
+## A host as a driver wants it: percent-decoded, and with the brackets of an
+## IPv6 literal removed. A URL has to bracket `[::1]` so that the port colon
+## stays unambiguous, but the address itself is `::1`.
+host_str : Str -> Str
+host_str = |raw|
+	if Str.starts_with(raw, "[") and Str.ends_with(raw, "]") {
+		decode_lenient(Str.drop_suffix(Str.drop_prefix(raw, "["), "]"))
+	} else {
+		decode_lenient(raw)
+	}
 
-    # Extract database from path (optional)
-    database =
-        if Str.starts_with(parts.path, "/") then
-            parts.path
-            |> Str.replace_first("/", "")
-            |> percent_decode
-            |> from_non_empty_str
-        else
-            parts.path
-            |> percent_decode
-            |> from_non_empty_str
+## The userinfo is `user` or `user:password`, both percent-decoded. An empty
+## password (`user:`) is still a password.
+split_userinfo : Str -> (Str, [Password(Str), NoPassword])
+split_userinfo = |ui|
+	match Str.split_first(ui, ":") {
+		Ok({ before, after }) => (decode_lenient(before), Password(decode_lenient(after)))
+		Err(NotFound) => (decode_lenient(ui), NoPassword)
+	}
 
-    # Parse query parameters into options
-    options =
-        parts.query
-        |> Maybe.map(parse_query_params)
-        |> Maybe.with_default(Dict.empty({}))
+## The database is the URL's path with its leading "/" removed,
+## percent-decoded. An empty remainder means no database.
+database_from_path : Str -> [Database(Str), NoDatabase]
+database_from_path = |path| {
+	decoded = decode_lenient(Str.drop_prefix(path, "/"))
+	if Str.is_empty(decoded) {
+		NoDatabase
+	} else {
+		Database(decoded)
+	}
+}
 
-    Ok(
-        {
-            host,
-            port: parts.port,
-            user,
-            auth,
-            database,
-            options,
-        },
-    )
+## The remainder of a SQLite URL after its prefix, or Err(NotFound) when the
+## URL is not a SQLite one. SQLite URLs do not
+## follow the standard URL format, so they get their own handling:
+## `sqlite:///absolute/path`, `sqlite://./relative/path`, and
+## `sqlite::memory:` all keep everything after the prefix as the path.
+sqlite_remainder : Str -> Try(Str, [NotFound])
+sqlite_remainder = |url_str|
+	match Str.drop_prefix_caseless_ascii(url_str, "sqlite://") {
+		Ok(rest) => Ok(rest)
+		Err(NotFound) => Str.drop_prefix_caseless_ascii(url_str, "sqlite:")
+	}
 
-## Parse URL with other protocol (partial - allows missing fields)
-parse_other_partial : Str, { protocol : Maybe Str, userinfo : Maybe Str, host : Str, port : Maybe U16, path : Str, query : Maybe Str, fragment : Maybe Str } -> Result PartialDatabaseUrl ParseError
-parse_other_partial = |protocol, parts|
-    parse_server_database_partial(parts)
-    |> Result.map_ok(|config| Other({ protocol, host: config.host, port: config.port, user: config.user, auth: config.auth, database: config.database, options: config.options }))
+parse_sqlite : Str -> DatabaseUrl.SQLiteConfig
+parse_sqlite = |rest|
+	match Str.split_first(rest, "?") {
+		Ok({ before, after }) => { path: decode_lenient(before), options: query_options(after) }
+		Err(NotFound) => { path: decode_lenient(rest), options: Dict.empty() }
+	}
 
-## Parse query parameters into a Dict
-parse_query_params : Str -> Dict Str Str
-parse_query_params = |query_str|
-    query_str
-    |> Str.split_on("&")
-    |> List.walk(
-        Dict.empty({}),
-        |dict, param|
-            when Str.split_first(param, "=") is
-                Ok({ before, after }) ->
-                    key = percent_decode(before)
-                    value = percent_decode(after)
-                    Dict.insert(dict, key, value)
+## The same parsing [Uri.query_params] gives every other protocol, since a
+## SQLite URL is only unusual before its `?`. A repeated key collapses in the
+## `Dict` with the last one winning.
+query_options : Str -> Dict(Str, Str)
+query_options = |query_str|
+	Dict.from_list(Uri.parse_query(query_str))
 
-                Err(NotFound) ->
-                    # Parameter without value (e.g., "?flag")
-                    key = percent_decode(param)
-                    Dict.insert(dict, key, ""),
-    )
+## Lenient percent-decoding: a malformed escape falls back to the raw text
+## instead of failing.
+decode_lenient : Str -> Str
+decode_lenient = |text|
+	match Uri.percent_decode(text) {
+		Ok(decoded) => decoded
+		Err(_) => text
+	}
 
-## Percent-decode a string (RFC 3986)
-## Converts %XX hex codes back to characters
-## Falls back to the original string if decoding fails
-percent_decode : Str -> Str
-percent_decode = |input|
-    when Url.percent_decode(input) is
-        Ok(decoded) -> decoded
-        Err(_) -> input
-
-# Tests
-expect
-    # Test basic PostgreSQL URL
-    when parse("postgresql://user:pass@localhost:5432/mydb") is
-        Ok(PostgreSQL(config)) ->
-            config.host
-            == "localhost"
-            and config.port
-            == 5432
-            and config.user
-            == "user"
-            and config.auth
-            == Password("pass")
-            and config.database
-            == "mydb"
-
-        _ -> Bool.false
+# =============================================================================
+# Tests: strict parse
+# =============================================================================
 
 expect
-    # Test PostgreSQL URL without port (strict parsing requires port)
-    parse("postgresql://user@localhost/mydb") == Err(MissingPort)
+	DatabaseUrl.parse("postgresql://user:pass@localhost:5432/mydb")
+		== Ok(PostgreSQL({ protocol: "postgresql", host: "localhost", port: 5432, user: "user", auth: Password("pass"), database: "mydb", options: Dict.empty() }))
 
 expect
-    # Test PostgreSQL URL with query parameters
-    when parse("postgresql://user:pass@localhost:5432/mydb?sslmode=require&connect_timeout=10") is
-        Ok(PostgreSQL(config)) ->
-            when Dict.get(config.options, "sslmode") is
-                Ok(v) -> v == "require"
-                Err(_) -> Bool.false
-
-        _ -> Bool.false
+	DatabaseUrl.parse("postgresql://user@localhost/mydb") == Err(MissingPort)
 
 expect
-    # Test MySQL URL
-    when parse("mysql://user:pass@localhost:3306/testdb") is
-        Ok(MySQL(config)) ->
-            config.host
-            == "localhost"
-            and config.port
-            == 3306
-            and config.user
-            == "user"
-            and config.auth
-            == Password("pass")
-            and config.database
-            == "testdb"
-
-        _ -> Bool.false
+	DatabaseUrl.parse("postgresql://user:pass@localhost:5432/mydb?sslmode=require&connect_timeout=10")
+		== Ok(PostgreSQL({ protocol: "postgresql", host: "localhost", port: 5432, user: "user", auth: Password("pass"), database: "mydb", options: Dict.from_list([("sslmode", "require"), ("connect_timeout", "10")]) }))
 
 expect
-    # Test MySQL URL without port (strict parsing requires port)
-    parse("mysql://user@localhost/mydb") == Err(MissingPort)
+	DatabaseUrl.parse("mysql://user:pass@localhost:3306/testdb")
+		== Ok(MySQL({ protocol: "mysql", host: "localhost", port: 3306, user: "user", auth: Password("pass"), database: "testdb", options: Dict.empty() }))
 
 expect
-    # Test SQLite URL with absolute path
-    parse("sqlite:///absolute/path/to/db.sqlite")
-    == Ok(SQLite({ path: "/absolute/path/to/db.sqlite", options: Dict.empty({}) }))
+	DatabaseUrl.parse("mysql://user@localhost/mydb") == Err(MissingPort)
 
 expect
-    # Test SQLite URL with relative path
-    parse("sqlite://./relative/db.sqlite")
-    == Ok(SQLite({ path: "./relative/db.sqlite", options: Dict.empty({}) }))
+	DatabaseUrl.parse("sqlite:///absolute/path/to/db.sqlite")
+		== Ok(SQLite({ path: "/absolute/path/to/db.sqlite", options: Dict.empty() }))
 
 expect
-    # Test SQLite URL with memory
-    parse("sqlite::memory:")
-    == Ok(SQLite({ path: ":memory:", options: Dict.empty({}) }))
+	DatabaseUrl.parse("sqlite://./relative/db.sqlite")
+		== Ok(SQLite({ path: "./relative/db.sqlite", options: Dict.empty() }))
 
 expect
-    # Test other protocol (mongodb) - requires port for strict parsing
-    parse("mongodb://localhost/mydb") == Err(MissingPort)
+	DatabaseUrl.parse("sqlite::memory:")
+		== Ok(SQLite({ path: ":memory:", options: Dict.empty() }))
 
 expect
-    # Test other protocol (mongodb) with all required fields
-    when parse("mongodb://user:pass@localhost:27017/mydb") is
-        Ok(Other(config)) ->
-            config.protocol
-            == "mongodb"
-            and config.host
-            == "localhost"
-            and config.port
-            == 27017
-            and config.user
-            == "user"
-            and config.database
-            == "mydb"
-
-        _ -> Bool.false
+# An unknown protocol is not held to PostgreSQL's requirements
+	DatabaseUrl.parse("mongodb://localhost/mydb")
+		== Ok(Other({ protocol: "mongodb", host: Host("localhost"), port: NoPort, user: NoUser, auth: NoPassword, database: Database("mydb"), options: Dict.empty() }))
 
 expect
-    # Test percent-encoded password
-    when parse("postgresql://user:p%40ss%21@localhost:5432/mydb") is
-        Ok(PostgreSQL(config)) -> config.auth == Password("p@ss!")
-        _ -> Bool.false
+	DatabaseUrl.parse("mongodb://user:pass@localhost:27017/mydb")
+		== Ok(Other({ protocol: "mongodb", host: Host("localhost"), port: Port(27017), user: User("user"), auth: Password("pass"), database: Database("mydb"), options: Dict.empty() }))
 
 expect
-    # Test missing database (strict parsing requires database)
-    parse("postgresql://user:pass@localhost:5432") == Err(MissingDatabase)
+# Redis URLs usually carry neither a user nor a database
+	DatabaseUrl.parse("redis://localhost:6379")
+		== Ok(Other({ protocol: "redis", host: Host("localhost"), port: Port(6379), user: NoUser, auth: NoPassword, database: NoDatabase, options: Dict.empty() }))
 
 expect
-    # Test missing database with trailing slash
-    parse("postgresql://user:pass@localhost:5432/") == Err(MissingDatabase)
+# A malformed port is nonsense whatever the protocol
+	DatabaseUrl.parse("redis://localhost:banana") == Err(InvalidPort("banana"))
 
 expect
-    # Test postgres:// alias for postgresql://
-    when parse("postgres://user:pass@localhost:5432/mydb") is
-        Ok(PostgreSQL(config)) -> config.host == "localhost" and config.database == "mydb"
-        _ -> Bool.false
+# Percent-encoded password
+	DatabaseUrl.parse("postgresql://user:p%40ss%21@localhost:5432/mydb")
+		== Ok(PostgreSQL({ protocol: "postgresql", host: "localhost", port: 5432, user: "user", auth: Password("p@ss!"), database: "mydb", options: Dict.empty() }))
 
 expect
-    # Test user without password (auth = None)
-    when parse("postgresql://user@localhost:5432/mydb") is
-        Ok(PostgreSQL(config)) -> config.user == "user" and config.auth == None
-        _ -> Bool.false
+# Percent-encoded host, as used for Unix socket paths
+	DatabaseUrl.parse("postgresql://user:pass@%2Fvar%2Frun%2Fpostgresql:5432/mydb")
+		== Ok(PostgreSQL({ protocol: "postgresql", host: "/var/run/postgresql", port: 5432, user: "user", auth: Password("pass"), database: "mydb", options: Dict.empty() }))
 
 expect
-    # Test missing user
-    parse("postgresql://localhost:5432/mydb") == Err(MissingUser)
+# An IPv6 literal loses the brackets a URL needs but a driver does not
+	DatabaseUrl.parse("postgresql://user:pass@[::1]:5432/mydb")
+		== Ok(PostgreSQL({ protocol: "postgresql", host: "::1", port: 5432, user: "user", auth: Password("pass"), database: "mydb", options: Dict.empty() }))
 
 expect
-    # Test empty host (caught by URI parser as invalid)
-    parse("postgresql://user:pass@:5432/mydb") == Err(InvalidHost(""))
+	DatabaseUrl.parse("postgresql://user:pass@localhost:5432") == Err(MissingDatabase)
 
 expect
-    # Test SQLite with query options
-    when parse("sqlite:///path/to/db.sqlite?mode=ro&cache=shared") is
-        Ok(SQLite(config)) ->
-            config.path
-            == "/path/to/db.sqlite"
-            and Dict.get(config.options, "mode")
-            == Ok("ro")
-            and Dict.get(config.options, "cache")
-            == Ok("shared")
-
-        _ -> Bool.false
-
-# parse_partial tests
-expect
-    # Test parse_partial with minimal URL
-    when parse_partial("postgresql://localhost") is
-        Ok(PostgreSQL(config)) ->
-            config.host
-            == Just("localhost")
-            and config.port
-            == Nothing
-            and config.user
-            == Nothing
-            and config.database
-            == Nothing
-
-        _ -> Bool.false
+# A trailing slash is still no database
+	DatabaseUrl.parse("postgresql://user:pass@localhost:5432/") == Err(MissingDatabase)
 
 expect
-    # Test parse_partial with port only
-    when parse_partial("postgresql://localhost:5432") is
-        Ok(PostgreSQL(config)) ->
-            config.host
-            == Just("localhost")
-            and config.port
-            == Just(5432)
-            and config.user
-            == Nothing
-
-        _ -> Bool.false
+# postgres:// is an alias for postgresql://, and the protocol field keeps them apart
+	DatabaseUrl.parse("postgres://user:pass@localhost:5432/mydb")
+		== Ok(PostgreSQL({ protocol: "postgres", host: "localhost", port: 5432, user: "user", auth: Password("pass"), database: "mydb", options: Dict.empty() }))
 
 expect
-    # Test parse_partial with user
-    when parse_partial("mysql://user@localhost:3306/mydb") is
-        Ok(MySQL(config)) ->
-            config.user
-            == Just("user")
-            and config.auth
-            == None
-            and config.database
-            == Just("mydb")
-
-        _ -> Bool.false
+# User without a password
+	DatabaseUrl.parse("postgresql://user@localhost:5432/mydb")
+		== Ok(PostgreSQL({ protocol: "postgresql", host: "localhost", port: 5432, user: "user", auth: NoPassword, database: "mydb", options: Dict.empty() }))
 
 expect
-    # Test parse_partial SQLite (same as strict)
-    parse_partial("sqlite::memory:") == Ok(SQLite({ path: ":memory:", options: Dict.empty({}) }))
+	DatabaseUrl.parse("postgresql://localhost:5432/mydb") == Err(MissingUser)
 
 expect
-    # Test empty password (different from no password)
-    when parse("postgresql://user:@localhost:5432/mydb") is
-        Ok(PostgreSQL(config)) -> config.user == "user" and config.auth == Password("")
-        _ -> Bool.false
+# The authority is present but the host is empty
+	DatabaseUrl.parse("postgresql://user:pass@:5432/mydb") == Err(MissingHost)
 
 expect
-    # Test SQLite with empty path (creates temporary database)
-    parse("sqlite:") == Ok(SQLite({ path: "", options: Dict.empty({}) }))
+# A port that was written but is not a U16
+	DatabaseUrl.parse("postgresql://user:pass@localhost:banana/mydb") == Err(InvalidPort("banana"))
 
 expect
-    # Test parse_partial with other protocol
-    when parse_partial("mongodb://localhost") is
-        Ok(Other(config)) ->
-            config.protocol
-            == "mongodb"
-            and config.host
-            == Just("localhost")
-            and config.port
-            == Nothing
-
-        _ -> Bool.false
-
-# Case-insensitivity tests
-expect
-    # Test uppercase POSTGRESQL://
-    when parse("POSTGRESQL://user:pass@localhost:5432/mydb") is
-        Ok(PostgreSQL(config)) -> config.host == "localhost" and config.database == "mydb"
-        _ -> Bool.false
+	DatabaseUrl.parse("sqlite:///path/to/db.sqlite?mode=ro&cache=shared")
+		== Ok(SQLite({ path: "/path/to/db.sqlite", options: Dict.from_list([("mode", "ro"), ("cache", "shared")]) }))
 
 expect
-    # Test mixed case PostgreSQL://
-    when parse("PostgreSQL://user:pass@localhost:5432/mydb") is
-        Ok(PostgreSQL(config)) -> config.host == "localhost"
-        _ -> Bool.false
+# An empty password is distinct from no password
+	DatabaseUrl.parse("postgresql://user:@localhost:5432/mydb")
+		== Ok(PostgreSQL({ protocol: "postgresql", host: "localhost", port: 5432, user: "user", auth: Password(""), database: "mydb", options: Dict.empty() }))
 
 expect
-    # Test uppercase MYSQL://
-    when parse("MYSQL://user:pass@localhost:3306/mydb") is
-        Ok(MySQL(config)) -> config.host == "localhost"
-        _ -> Bool.false
+# SQLite with an empty path (a temporary database)
+	DatabaseUrl.parse("sqlite:") == Ok(SQLite({ path: "", options: Dict.empty() }))
+
+# =============================================================================
+# Tests: lenient parse
+# =============================================================================
 
 expect
-    # Test uppercase SQLITE:
-    when parse("SQLITE::memory:") is
-        Ok(SQLite(config)) -> config.path == ":memory:"
-        _ -> Bool.false
+	DatabaseUrl.parse_partial("postgresql://localhost")
+		== Ok(PostgreSQL({ protocol: "postgresql", host: Host("localhost"), port: NoPort, user: NoUser, auth: NoPassword, database: NoDatabase, options: Dict.empty() }))
 
 expect
-    # Test uppercase SQLITE:// with path
-    when parse("SQLITE:///path/to/db.sqlite") is
-        Ok(SQLite(config)) -> config.path == "/path/to/db.sqlite"
-        _ -> Bool.false
-
-# Edge case tests
-expect
-    # Test empty input
-    parse("") == Err(InvalidUri)
+	DatabaseUrl.parse_partial("postgresql://localhost:5432")
+		== Ok(PostgreSQL({ protocol: "postgresql", host: Host("localhost"), port: Port(5432), user: NoUser, auth: NoPassword, database: NoDatabase, options: Dict.empty() }))
 
 expect
-    # Test query param without value (?key without =)
-    when parse("postgresql://user:pass@localhost:5432/mydb?sslmode") is
-        Ok(PostgreSQL(config)) ->
-            Dict.get(config.options, "sslmode") == Ok("")
-
-        _ -> Bool.false
+	DatabaseUrl.parse_partial("mysql://user@localhost:3306/mydb")
+		== Ok(MySQL({ protocol: "mysql", host: Host("localhost"), port: Port(3306), user: User("user"), auth: NoPassword, database: Database("mydb"), options: Dict.empty() }))
 
 expect
-    # Test query param with empty value (?key=)
-    when parse("postgresql://user:pass@localhost:5432/mydb?sslmode=") is
-        Ok(PostgreSQL(config)) ->
-            Dict.get(config.options, "sslmode") == Ok("")
+	DatabaseUrl.parse_partial("sqlite::memory:") == Ok(SQLite({ path: ":memory:", options: Dict.empty() }))
 
-        _ -> Bool.false
+expect
+	DatabaseUrl.parse_partial("mongodb://localhost")
+		== Ok(Other({ protocol: "mongodb", host: Host("localhost"), port: NoPort, user: NoUser, auth: NoPassword, database: NoDatabase, options: Dict.empty() }))
 
+expect
+# Nonsense is still an error, even leniently
+	DatabaseUrl.parse_partial("postgresql://localhost:banana") == Err(InvalidPort("banana"))
+
+expect
+# The host is percent-decoded leniently too
+	DatabaseUrl.parse_partial("postgresql://%2Fvar%2Frun%2Fpostgresql")
+		== Ok(PostgreSQL({ protocol: "postgresql", host: Host("/var/run/postgresql"), port: NoPort, user: NoUser, auth: NoPassword, database: NoDatabase, options: Dict.empty() }))
+
+expect
+# And an IPv6 literal is unbracketed leniently too
+	DatabaseUrl.parse_partial("postgresql://[::1]:5432")
+		== Ok(PostgreSQL({ protocol: "postgresql", host: Host("::1"), port: Port(5432), user: NoUser, auth: NoPassword, database: NoDatabase, options: Dict.empty() }))
+
+expect
+# For an unknown protocol there is nothing for strict parsing to be stricter
+# about, so it reports what the lenient test above it reports
+	DatabaseUrl.parse_partial("redis://localhost:6379")
+		== Ok(Other({ protocol: "redis", host: Host("localhost"), port: Port(6379), user: NoUser, auth: NoPassword, database: NoDatabase, options: Dict.empty() }))
+
+# =============================================================================
+# Tests: case-insensitivity
+# =============================================================================
+
+expect
+	DatabaseUrl.parse("POSTGRESQL://user:pass@localhost:5432/mydb")
+		== Ok(PostgreSQL({ protocol: "POSTGRESQL", host: "localhost", port: 5432, user: "user", auth: Password("pass"), database: "mydb", options: Dict.empty() }))
+
+expect
+	DatabaseUrl.parse("PostgreSQL://user:pass@localhost:5432/mydb")
+		== Ok(PostgreSQL({ protocol: "PostgreSQL", host: "localhost", port: 5432, user: "user", auth: Password("pass"), database: "mydb", options: Dict.empty() }))
+
+expect
+	DatabaseUrl.parse("MYSQL://user:pass@localhost:3306/mydb")
+		== Ok(MySQL({ protocol: "MYSQL", host: "localhost", port: 3306, user: "user", auth: Password("pass"), database: "mydb", options: Dict.empty() }))
+
+expect
+	DatabaseUrl.parse("SQLITE::memory:") == Ok(SQLite({ path: ":memory:", options: Dict.empty() }))
+
+expect
+	DatabaseUrl.parse("SQLITE:///path/to/db.sqlite") == Ok(SQLite({ path: "/path/to/db.sqlite", options: Dict.empty() }))
+
+# =============================================================================
+# Tests: edge cases
+# =============================================================================
+
+expect
+	DatabaseUrl.parse("") == Err(MissingProtocol)
+
+expect
+# A scheme-relative URL has no protocol to dispatch on
+	DatabaseUrl.parse("//localhost:5432/mydb") == Err(RelativeUrl)
+
+expect
+# A query param without a value
+	DatabaseUrl.parse("postgresql://user:pass@localhost:5432/mydb?sslmode")
+		== Ok(PostgreSQL({ protocol: "postgresql", host: "localhost", port: 5432, user: "user", auth: Password("pass"), database: "mydb", options: Dict.from_list([("sslmode", "")]) }))
+
+expect
+# A query param with an empty value
+	DatabaseUrl.parse("postgresql://user:pass@localhost:5432/mydb?sslmode=")
+		== Ok(PostgreSQL({ protocol: "postgresql", host: "localhost", port: 5432, user: "user", auth: Password("pass"), database: "mydb", options: Dict.from_list([("sslmode", "")]) }))
+
+expect
+# A repeated key collapses and the last one wins
+	DatabaseUrl.parse("postgresql://user:pass@localhost:5432/mydb?sslmode=require&sslmode=disable")
+		== Ok(PostgreSQL({ protocol: "postgresql", host: "localhost", port: 5432, user: "user", auth: Password("pass"), database: "mydb", options: Dict.from_list([("sslmode", "disable")]) }))

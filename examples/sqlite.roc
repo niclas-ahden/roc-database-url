@@ -1,91 +1,53 @@
 app [main!] {
-    cli: platform "https://github.com/roc-lang/basic-cli/releases/download/0.20.0/X73hGh05nNTkDHU06FHC0YfFaQB1pimX7gncRcao5mU.tar.br",
-    dburl: "../package/main.roc",
+	pf: platform "https://github.com/niclas-ahden/basic-cli/releases/download/0.22.1/DobkAk7zNyqAgqh2Riaj5c5DtWtKhd5iVYE5RFa6izcd.tar.zst",
+	db: "../package/main.roc",
 }
 
-import cli.Stdout
-import dburl.DatabaseUrl
+import pf.Stdout
+import db.DatabaseUrl
 
-main! = |_|
-    examples = [
-        # In-memory database
-        "sqlite::memory:",
-        # Absolute path (Unix-style)
-        "sqlite:///absolute/path/to/database.db",
-        # Relative path with ./ prefix
-        "sqlite://./relative/path/to/database.db",
-        # Simple filename
-        "sqlite:mydb.sqlite",
-        # With query parameters (SQLite options)
-        "sqlite:///path/to/db.sqlite?mode=ro",
-        # With multiple options
-        "sqlite:///path/to/db.sqlite?mode=rw&cache=shared",
-        # Journal mode option
-        "sqlite:///path/to/db.sqlite?_journal_mode=WAL",
-        # Foreign keys option
-        "sqlite:///path/to/db.sqlite?_foreign_keys=on",
-    ]
+# Parsing SQLite URLs. Run it with: roc examples/sqlite.roc
+#
+# SQLite URLs are file paths, so they have no host, port, user, or password.
 
-    List.walk!(examples, {}, \{}, url ->
-        _ = Stdout.line! "\n=== Parsing: $(url) ==="
+main! = |_| {
+	urls = [
+		# In-memory database
+		"sqlite::memory:",
+		# Absolute path
+		"sqlite:///absolute/path/to/database.db",
+		# Relative path
+		"sqlite://./relative/path/to/database.db",
+		# Simple filename
+		"sqlite:mydb.sqlite",
+		# With options such as mode (ro, rw, rwc, memory) and cache (shared, private)
+		"sqlite:///path/to/db.sqlite?mode=rw&cache=shared",
+		# Journal mode option
+		"sqlite:///path/to/db.sqlite?_journal_mode=WAL",
+	]
 
-        when DatabaseUrl.parse(url) is
-            Ok(SQLite(config)) ->
-                _ = Stdout.line! "  Protocol: SQLite"
-                _ = Stdout.line! "  Path: $(config.path)"
-                if Dict.is_empty(config.options) then
-                    _ = Stdout.line! "  Options: (none)"
-                    {}
-                else
-                    options_list = config.options |> Dict.to_list
-                    _ = List.walk!(options_list, {}, \{}, (key, value) ->
-                        _ = Stdout.line! "  Option: $(key) = $(value)"
-                        {})
-                    {}
+	for url in urls {
+		Stdout.line!("=== Parsing: ${url} ===")?
 
-            Ok(_) ->
-                _ = Stdout.line! "  Error: Expected SQLite URL"
-                {}
+		match DatabaseUrl.parse(url) {
+			Ok(SQLite(config)) => {
+				Stdout.line!("  Path: ${config.path}")?
+				print_options!(config.options)?
+			}
 
-            Err(InvalidUri) ->
-                _ = Stdout.line! "  Error: Invalid URI"
-                {}
+			Ok(_) => Stdout.line!("  Expected a SQLite URL")?
+			Err(err) => Stdout.line!("  Error: ${Str.inspect(err)}")?
+		}
+	}
 
-            Err(InvalidPort(port)) ->
-                _ = Stdout.line! "  Error: Invalid port: $(port)"
-                {}
+	Ok({})
+}
 
-            Err(InvalidHost(host)) ->
-                _ = Stdout.line! "  Error: Invalid host: $(host)"
-                {}
+print_options! = |options| {
+	for pair in Dict.to_list(options) {
+		(key, value) = pair
+		Stdout.line!("  Option: ${key} = ${value}")?
+	}
 
-            Err(MissingDatabase) ->
-                _ = Stdout.line! "  Error: Missing database"
-                {}
-
-            Err(MissingUser) ->
-                _ = Stdout.line! "  Error: Missing user"
-                {}
-
-            Err(MissingPort) ->
-                _ = Stdout.line! "  Error: Missing port"
-                {}
-
-            Err(RelativeUrl) ->
-                _ = Stdout.line! "  Error: Relative URL not supported"
-                {}
-
-            Err(MissingProtocol) ->
-                _ = Stdout.line! "  Error: Missing protocol"
-                {})
-
-    _ = Stdout.line! "\n=== SQLite Specific Options ==="
-    _ = Stdout.line! "Common SQLite URL query parameters:"
-    _ = Stdout.line! "  - mode: Access mode (ro=readonly, rw=readwrite, rwc=readwrite+create, memory)"
-    _ = Stdout.line! "  - cache: Cache mode (shared, private)"
-    _ = Stdout.line! "  - _journal_mode: Journal mode (DELETE, TRUNCATE, PERSIST, MEMORY, WAL, OFF)"
-    _ = Stdout.line! "  - _foreign_keys: Enable foreign key constraints (on/off)"
-    _ = Stdout.line! "  - _synchronous: Synchronous mode (OFF, NORMAL, FULL, EXTRA)"
-    _ = Stdout.line! "  - _busy_timeout: Busy timeout in milliseconds"
-    _ = Stdout.line! "\nNote: SQLite URLs don't have host, port, user, or password fields."
-    Stdout.line! "The database location is specified as a file path."
+	Ok({})
+}
