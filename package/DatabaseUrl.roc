@@ -141,7 +141,7 @@ DatabaseUrl := [
 		}
 }
 
-protocol_of : Uri -> Try(Str, [MissingProtocol, RelativeUrl, ..])
+protocol_of : Uri -> Try(Str, [MissingProtocol, RelativeUrl])
 protocol_of = |uri|
 	match Uri.scheme(uri) {
 		Scheme(s) => Ok(s)
@@ -160,28 +160,28 @@ classify = |protocol|
 		Other
 	}
 
-parse_server : Uri, Str -> Try(DatabaseUrl.Config, [InvalidPort(Str), MissingDatabase, MissingHost, MissingPort, MissingUser, ..])
+parse_server : Uri, Str -> Try(DatabaseUrl.Config, [InvalidPort(Str), MissingDatabase, MissingHost, MissingPort, MissingUser])
 parse_server = |uri, protocol| {
-	host = 
+	host =
 		match Uri.host(uri) {
 			Host(h) => host_str(h)
 			EmptyHost | NoHost => return Err(MissingHost)
 		}
 
-	port = 
+	port =
 		match Uri.port(uri) {
 			Ok(Port(p)) => p
 			Ok(NoPort) => return Err(MissingPort)
 			Err(PortParseErr(raw)) => return Err(InvalidPort(raw))
 		}
 
-	(user, auth) = 
+	(user, auth) =
 		match Uri.userinfo(uri) {
 			NoUserinfo => return Err(MissingUser)
 			Userinfo(ui) => split_userinfo(ui)
 		}
 
-	database = 
+	database =
 		match database_from_path(Uri.path(uri)) {
 			Database(db) => db
 			NoDatabase => return Err(MissingDatabase)
@@ -190,22 +190,22 @@ parse_server = |uri, protocol| {
 	Ok({ protocol, host, port, user, auth, database, options: Dict.from_list(Uri.query_params(uri)) })
 }
 
-parse_server_partial : Uri, Str -> Try(DatabaseUrl.PartialConfig, [InvalidPort(Str), ..])
+parse_server_partial : Uri, Str -> Try(DatabaseUrl.PartialConfig, [InvalidPort(Str)])
 parse_server_partial = |uri, protocol| {
-	host = 
+	host =
 		match Uri.host(uri) {
 			Host(h) => Host(host_str(h))
 			EmptyHost | NoHost => NoHost
 		}
 
-	port = 
+	port =
 		match Uri.port(uri) {
 			Ok(Port(p)) => Port(p)
 			Ok(NoPort) => NoPort
 			Err(PortParseErr(raw)) => return Err(InvalidPort(raw))
 		}
 
-	(user, auth) = 
+	(user, auth) =
 		match Uri.userinfo(uri) {
 			NoUserinfo => (NoUser, NoPassword)
 			Userinfo(ui) => {
