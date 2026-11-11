@@ -15,7 +15,7 @@ we can't know what they require (e.g. `redis://localhost:6379` is a fine Redis U
 
 ```roc
 app [main!] {
-    pf: platform "https://github.com/roc-lang/basic-cli/releases/download/0.26.0/GddgvsGjiNXrHFW6au5i5dUDbTs8FinQdrgE2Gqmw53t.tar.zst",
+    pf: platform "https://github.com/roc-lang/basic-cli/releases/download/0.28.0/2yhxoR7cZPSYbyUzPWULFw8AA6QEcdsgFNRmzu7pZbst.tar.zst",
     db: "https://github.com/niclas-ahden/roc-database-url/releases/download/0.4.1/3tFBYWq9eBxjJe9FZJLbuQtUaFBrz3ykK2QDooeFM9Fy.tar.zst",
 }
 
